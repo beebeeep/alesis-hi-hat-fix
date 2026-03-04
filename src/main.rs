@@ -1,6 +1,7 @@
-use std::io::stdin;
+use std::{io::stdin, thread::sleep, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
+use log::{error, info, trace};
 use midir::{MidiInput, MidiInputPort, MidiOutput, MidiOutputConnection, os::unix::VirtualOutput};
 
 struct OutState {
@@ -9,9 +10,14 @@ struct OutState {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
     let matches = clap::Command::new("alesis_hihat")
         .arg(clap::Arg::new("port").short('p'))
-        .arg(clap::Arg::new("name").short('n'))
+        .arg(
+            clap::Arg::new("out")
+                .short('o')
+                .default_value("alesis_hihat"),
+        )
         .arg(
             clap::Arg::new("list")
                 .short('l')
@@ -21,7 +27,8 @@ fn main() -> Result<()> {
 
     let midi_in = MidiInput::new("alesis_hihat").context("initialising midi input")?;
     let midi_out = MidiOutput::new("alesis_hihat").context("initializing midi output")?;
-    let out_port = match MidiOutput::create_virtual(midi_out, "alesis_hihat") {
+    let out_name = matches.get_one::<String>("out").unwrap();
+    let out_port = match MidiOutput::create_virtual(midi_out, &out_name) {
         Err(e) => {
             return Err(anyhow!("creating virtual output port: {e}"));
         }
@@ -45,10 +52,11 @@ fn main() -> Result<()> {
                 .find_port_by_id(id.clone())
                 .context("getting port by id")?,
         );
-    }
-    if let Some(name) = matches.get_one::<String>("name") {
+    } else {
         for p in midi_in.ports() {
-            if midi_in.port_name(&p).unwrap().to_lowercase().contains(name) {
+            let port_name = midi_in.port_name(&p).context("getting port name")?;
+            if port_name.contains("Alesis") && port_name.contains("MIDI") {
+                info!("Automatically selecting port {}: {}", p.id(), port_name);
                 in_port = Some(p);
                 break;
             }
@@ -59,26 +67,27 @@ fn main() -> Result<()> {
     }
 
     let in_port = in_port.unwrap();
-    println!("connecting to port {}", in_port.id());
+    info!(
+        "Reading from port {}, writing to port '{}', press Ctrl+C to exit",
+        in_port.id(),
+        out_name
+    );
 
     match midi_in.connect(&in_port, "midi test", handle_midi_data, state) {
         Err(e) => {
             return Err(anyhow!("connecting to midi input: {e}"));
         }
-        Ok(_c) => {
-            let mut i = String::new();
-            println!("press Return to exit");
-            let _ = stdin().read_line(&mut i);
-        }
+        Ok(_c) => loop {
+            sleep(Duration::from_millis(300));
+        },
     };
-    Ok(())
 }
 
-fn handle_midi_data(_ts: u64, message: &[u8], state: &mut OutState) -> () {
-    // if message[0] != 0xf8 {
-    //     // skip clock messages
-    //     println!("{ts}: {message:?}");
-    // }
+fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) -> () {
+    if message[0] != 0xf8 {
+        // skip clock messages
+        trace!("Raw MIDI input: ts {ts}: {message:?}");
+    }
     let out_msg = match message {
         [0xb9, 0x04, 0x00] => {
             // control change indicating the next note will be open hihat
@@ -102,6 +111,6 @@ fn handle_midi_data(_ts: u64, message: &[u8], state: &mut OutState) -> () {
     };
 
     if let Err(e) = state.out.send(out_msg) {
-        println!("seding data to output: {e}");
+        error!("seding data to output: {e}");
     }
 }
