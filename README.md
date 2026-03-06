@@ -11,4 +11,7 @@ hi-hat-fix -p 16:0 # to read from port 16:0
 ``` 
 It will create new virtual port (by default called `alesis_hihat`) - that's where you shall connect in your DAW/sampler/whatever else drum program you use.
 
+# Bonus
+Pass `-d` option and turn your hi-hat pedal into second kick pedal to crank some blastbits! Hi-hat will always be open, because who needs closed hi-hat in that case, right?
+
 

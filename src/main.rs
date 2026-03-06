@@ -7,12 +7,17 @@ use midir::{MidiInput, MidiInputPort, MidiOutput, MidiOutputConnection, os::unix
 struct OutState {
     out: MidiOutputConnection,
     hihat_pressed: bool,
+    double_pedal: bool,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     let matches = clap::Command::new("alesis_hihat")
-        .arg(clap::Arg::new("port").short('p'))
+        .arg(
+            clap::Arg::new("port")
+                .short('p')
+                .help("midi port to connect, determine automatically if not specified"),
+        )
         .arg(
             clap::Arg::new("out")
                 .short('o')
@@ -21,6 +26,13 @@ fn main() -> Result<()> {
         .arg(
             clap::Arg::new("list")
                 .short('l')
+                .help("list all inputs")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("double-pedal")
+                .short('d')
+                .help("double-pedal mode")
                 .action(clap::ArgAction::SetTrue),
         )
         .get_matches();
@@ -38,6 +50,7 @@ fn main() -> Result<()> {
     let state = OutState {
         out: out_port,
         hihat_pressed: false,
+        double_pedal: matches.get_flag("double-pedal"),
     };
 
     if matches.get_flag("list") {
@@ -92,25 +105,46 @@ fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) -> () {
         [0xb9, 0x04, 0x00] => {
             // control change indicating the next note will be open hihat
             state.hihat_pressed = false;
-            message
+            Some(&[0xb9, 0x04, 0x00])
         }
         [0xb9, 0x04, 0x7f] => {
             // control change indicating the next note will be closed hihat
             state.hihat_pressed = true;
-            message
+            Some(&[0xb9, 0x04, 0x7f])
         }
-        [0x99, 0x2e, vel] => {
-            if state.hihat_pressed {
-                // replace note 46 (open hihat) to 42 (closed hihat)
-                &[0x99, 0x2a, *vel]
+        [0xa9, 0x2e, pressure] => {
+            if !state.double_pedal {
+                // supress "polyphonic aftertouch" for hi-hat notes if we have double pedal mode enabled
+                // otherwise it will mute our hi-hats
+                Some(&[0xa9, 0x2e, *pressure])
             } else {
-                &[0x99, 0x2e, *vel]
+                None
             }
         }
-        v => v,
+        [0x99, 0x2c, vel] => {
+            // hi-hat pedal note, replace with kick if double pedal mode is enabled
+            if state.double_pedal {
+                Some(&[0x99, 0x24, *vel])
+            } else {
+                Some(&[0x99, 0x2c, *vel])
+            }
+        }
+        [0x99, 0x2e, vel] => {
+            // hi-hat note
+            if state.hihat_pressed && !state.double_pedal {
+                // replace note 46 (open hihat) to 42 (closed hihat)
+                Some(&[0x99, 0x2a, *vel])
+            } else {
+                Some(&[0x99, 0x2e, *vel])
+            }
+        }
+        [d1, d2, d3] => Some(&[*d1, *d2, *d3]),
+        _ => None,
     };
 
-    if let Err(e) = state.out.send(out_msg) {
-        error!("seding data to output: {e}");
+    if let Some(out_msg) = out_msg {
+        if let Err(e) = state.out.send(out_msg) {
+            error!("seding data to output: {e}");
+        }
     }
 }
