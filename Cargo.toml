@@ -2,6 +2,11 @@
 name = "alesis-hi-hat-fix"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
+repository = "https://github.com/beebeeep/alesis-hi-hat-fix"
+description = "Alesis Turbo Mesh hi-hat pedal fix"
+license = "MIT"
+keywords = ["midi"]
 
 [dependencies]
 anyhow = "1.0.102"
