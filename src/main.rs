@@ -1,4 +1,7 @@
-use std::{io::stdin, thread::sleep, time::Duration};
+use std::{
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow};
 use log::{error, info, trace};
@@ -8,6 +11,7 @@ struct OutState {
     out: MidiOutputConnection,
     hihat_pressed: bool,
     double_pedal: bool,
+    mappings: Vec<(u8, u8)>,
 }
 
 fn main() -> Result<()> {
@@ -23,6 +27,7 @@ fn main() -> Result<()> {
                 .short('o')
                 .default_value("alesis_hihat"),
         )
+        .arg(clap::Arg::new("map").short('m').num_args(0..))
         .arg(
             clap::Arg::new("list")
                 .short('l')
@@ -40,6 +45,20 @@ fn main() -> Result<()> {
     let midi_in = MidiInput::new("alesis_hihat").context("initialising midi input")?;
     let midi_out = MidiOutput::new("alesis_hihat").context("initializing midi output")?;
     let out_name = matches.get_one::<String>("out").unwrap();
+
+    let mut mappings: Vec<(u8, u8)> = Vec::new();
+    if let Some(matches) = matches.get_many::<String>("map") {
+        for m in matches {
+            let Some((from, to)) = m.split_once(":") else {
+                return Err(anyhow!("mappings shall be in format 'from:to'"));
+            };
+            let (Ok(from), Ok(to)) = (from.parse(), to.parse()) else {
+                return Err(anyhow!("notes must be numbers"));
+            };
+            mappings.push((from, to));
+        }
+    }
+
     let out_port = match MidiOutput::create_virtual(midi_out, &out_name) {
         Err(e) => {
             return Err(anyhow!("creating virtual output port: {e}"));
@@ -51,6 +70,7 @@ fn main() -> Result<()> {
         out: out_port,
         hihat_pressed: false,
         double_pedal: matches.get_flag("double-pedal"),
+        mappings,
     };
 
     if matches.get_flag("list") {
@@ -97,10 +117,12 @@ fn main() -> Result<()> {
 }
 
 fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) -> () {
+    let start = Instant::now();
     if message[0] != 0xf8 {
         // skip clock messages
         trace!("Raw MIDI input: ts {ts}: {message:?}");
     }
+
     let out_msg = match message {
         [0xb9, 0x04, 0x00] => {
             // control change indicating the next note will be open hihat
@@ -138,13 +160,40 @@ fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) -> () {
                 Some(&[0x99, 0x2e, *vel])
             }
         }
+        [0x99, note, vel] => {
+            if let Some(new_note) = state
+                .mappings
+                .iter()
+                .find_map(|(from, to)| if note == from { Some(to) } else { None })
+            {
+                Some(&[0x99, *new_note, *vel])
+            } else {
+                Some(&[0x99, *note, *vel])
+            }
+        }
         [d1, d2, d3] => Some(&[*d1, *d2, *d3]),
         _ => None,
+    };
+
+    // apply mappings, if any
+    let out_msg = if let Some([0x99, note, vel]) = out_msg {
+        if let Some(new_note) = state
+            .mappings
+            .iter()
+            .find_map(|(from, to)| if note == from { Some(to) } else { None })
+        {
+            Some(&[0x99, *new_note, *vel])
+        } else {
+            Some(&[0x99, *note, *vel])
+        }
+    } else {
+        out_msg
     };
 
     if let Some(out_msg) = out_msg {
         if let Err(e) = state.out.send(out_msg) {
             error!("seding data to output: {e}");
         }
+        trace!("processed note in {:#?}", start.elapsed());
     }
 }
