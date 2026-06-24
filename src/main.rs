@@ -14,7 +14,7 @@ struct OutState {
     mappings: Vec<(u8, u8)>,
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let matches = clap::Command::new("alesis_hihat")
         .arg(
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let out_port = match MidiOutput::create_virtual(midi_out, &out_name) {
+    let out_port = match MidiOutput::create_virtual(midi_out, out_name) {
         Err(e) => {
             return Err(anyhow!("creating virtual output port: {e}"));
         }
@@ -108,15 +108,16 @@ fn main() -> Result<()> {
 
     match midi_in.connect(&in_port, "midi test", handle_midi_data, state) {
         Err(e) => {
-            return Err(anyhow!("connecting to midi input: {e}"));
+            Err(anyhow!("connecting to midi input: {e}"))?;
         }
         Ok(_c) => loop {
             sleep(Duration::from_millis(300));
         },
     };
+    Ok(())
 }
 
-fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) -> () {
+fn handle_midi_data(ts: u64, message: &[u8], state: &mut OutState) {
     let start = Instant::now();
     if message[0] != 0xf8 {
         // skip clock messages
